@@ -30,6 +30,7 @@ settings.gradle.kts
 firebase.json
 firestore.indexes.json
 firestore.rules
+database.rules.json
 
 # Gradle settings
 settings.gradle.kts
