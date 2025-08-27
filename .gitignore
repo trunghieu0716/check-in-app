@@ -24,3 +24,14 @@ Thumbs.db
 # Google Services (Firebase)
 app/google-services.json
 
+settings.gradle.kts
+
+# Firebase config
+firebase.json
+firestore.indexes.json
+firestore.rules
+
+# Gradle settings
+settings.gradle.kts
+
+
