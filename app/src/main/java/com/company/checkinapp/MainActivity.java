@@ -5,6 +5,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.SharedPreferences;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -13,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.content.ContextCompat;
 import com.company.checkinapp.activities.HistoryActivity;
 import com.company.checkinapp.activities.LoginActivity;
+import com.company.checkinapp.models.AttendanceSession;
 import androidx.appcompat.app.AlertDialog;
 import android.util.Log;
 import com.google.android.gms.location.FusedLocationProviderClient;
@@ -31,10 +33,14 @@ import com.google.firebase.firestore.FirebaseFirestore;
 import com.google.firebase.firestore.GeoPoint;
 import com.google.firebase.firestore.Query;
 import com.google.firebase.firestore.DocumentSnapshot;
+import com.google.firebase.Timestamp;
 import java.util.Date;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.Map;
+import java.text.SimpleDateFormat;
+import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -47,6 +53,13 @@ public class MainActivity extends AppCompatActivity {
     private FusedLocationProviderClient locationClient;
     private LocationCallback locationCallback;
     private static final String TAG = "MainActivity";
+    
+    // SharedPreferences để lưu trạng thái
+    private SharedPreferences preferences;
+    private static final String PREF_NAME = "attendance_state";
+    private static final String KEY_IS_CHECKED_IN = "is_checked_in";
+    private static final String KEY_CHECKIN_TIME = "checkin_time";
+    private static final String KEY_SESSION_ID = "session_id";
 
     private final ActivityResultLauncher<String[]> requestLocationPermissions =
             registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), result -> {
@@ -77,6 +90,7 @@ public class MainActivity extends AppCompatActivity {
 
         db = FirebaseFirestore.getInstance();
         locationClient = LocationServices.getFusedLocationProviderClient(this);
+        preferences = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
 
         checkinBtn.setOnClickListener(v -> markAttendance("checkin"));
         checkoutBtn.setOnClickListener(v -> markAttendance("checkout"));
@@ -88,6 +102,7 @@ public class MainActivity extends AppCompatActivity {
                     .setMessage("Bạn có chắc chắn muốn đăng xuất?")
                     .setPositiveButton("Đăng xuất", (dialog, which) -> {
                         FirebaseAuth.getInstance().signOut();
+                        clearAttendanceState();
                         startActivity(new Intent(this, LoginActivity.class));
                         finish();
                     })
@@ -96,6 +111,31 @@ public class MainActivity extends AppCompatActivity {
         });
 
         askLocationPermissionIfNeeded();
+        updateUIBasedOnState();
+    }
+
+    private void updateUIBasedOnState() {
+        boolean isCheckedIn = preferences.getBoolean(KEY_IS_CHECKED_IN, false);
+        long checkinTime = preferences.getLong(KEY_CHECKIN_TIME, 0);
+        
+        if (isCheckedIn && checkinTime > 0) {
+            checkinBtn.setEnabled(false);
+            checkoutBtn.setEnabled(true);
+            
+            SimpleDateFormat sdf = new SimpleDateFormat("HH:mm dd/MM/yyyy", Locale.getDefault());
+            String checkinTimeStr = sdf.format(new Date(checkinTime));
+            statusText.setText("Đã check-in lúc: " + checkinTimeStr + "\nChờ check-out...");
+            
+            checkinBtn.setText("Đã Check-in");
+            checkoutBtn.setText("Check-out");
+        } else {
+            checkinBtn.setEnabled(true);
+            checkoutBtn.setEnabled(false);
+            
+            statusText.setText("Chưa chấm công");
+            checkinBtn.setText("Check-in");
+            checkoutBtn.setText("Chưa thể Check-out");
+        }
     }
 
     private void askLocationPermissionIfNeeded() {
@@ -112,6 +152,18 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void markAttendance(String type) {
+        boolean isCheckedIn = preferences.getBoolean(KEY_IS_CHECKED_IN, false);
+        
+        if (type.equals("checkin") && isCheckedIn) {
+            Toast.makeText(this, "Bạn đã check-in rồi! Hãy check-out trước.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        
+        if (type.equals("checkout") && !isCheckedIn) {
+            Toast.makeText(this, "Bạn chưa check-in! Hãy check-in trước.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         boolean fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED;
         boolean coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -122,10 +174,8 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        // Hiển thị loading
         Toast.makeText(this, "Đang lấy vị trí...", Toast.LENGTH_SHORT).show();
 
-        // Thử lấy last known location trước
         locationClient.getLastLocation().addOnSuccessListener(location -> {
             if (location != null) {
                 Log.i(TAG, "Last location obtained: lat=" + location.getLatitude() + " lon=" + location.getLongitude());
@@ -147,7 +197,6 @@ public class MainActivity extends AppCompatActivity {
                 .setMaxUpdateDelayMillis(15000)
                 .build();
 
-        // Kiểm tra location settings trước
         LocationSettingsRequest.Builder builder = new LocationSettingsRequest.Builder()
                 .addLocationRequest(locationRequest);
 
@@ -155,13 +204,11 @@ public class MainActivity extends AppCompatActivity {
         Task<LocationSettingsResponse> task = settingsClient.checkLocationSettings(builder.build());
 
         task.addOnSuccessListener(locationSettingsResponse -> {
-            // Location settings are satisfied, proceed with location request
             proceedWithLocationRequest(type, locationRequest);
         });
 
         task.addOnFailureListener(e -> {
             Log.w(TAG, "Location settings not satisfied", e);
-            // Still try to get location even if settings are not ideal
             proceedWithLocationRequest(type, locationRequest);
         });
     }
@@ -175,9 +222,7 @@ public class MainActivity extends AppCompatActivity {
                     android.location.Location location = locationResult.getLastLocation();
                     Log.i(TAG, "Fresh location obtained: lat=" + location.getLatitude() + " lon=" + location.getLongitude());
 
-                    // Dừng location updates
                     locationClient.removeLocationUpdates(locationCallback);
-
                     processAttendanceWithLocation(type, new GeoPoint(location.getLatitude(), location.getLongitude()));
                 }
             }
@@ -191,7 +236,6 @@ public class MainActivity extends AppCompatActivity {
         if (fine || coarse) {
             locationClient.requestLocationUpdates(locationRequest, locationCallback, getMainLooper());
 
-            // Timeout sau 20 giây nếu không lấy được location
             new android.os.Handler().postDelayed(() -> {
                 if (locationCallback != null) {
                     locationClient.removeLocationUpdates(locationCallback);
@@ -206,91 +250,109 @@ public class MainActivity extends AppCompatActivity {
 
     private void processAttendanceWithLocation(String type, GeoPoint geoPoint) {
         String uid = mAuth.getCurrentUser().getUid();
-
-        // Thay vì query phức tạp, chỉ lưu trực tiếp nếu gặp lỗi index
-        // Sau này khi đã tạo index thì có thể uncomment phần check duplicate
-        saveAttendanceRecord(type, geoPoint, uid);
-
-        /*
-        // Code này sẽ hoạt động sau khi tạo composite index
-        db.collection("attendance")
-                .whereEqualTo("userId", uid)
-                .orderBy("timestamp", Query.Direction.DESCENDING)
-                .limit(1)
-                .get()
-                .addOnSuccessListener(qs -> {
-                    boolean skip = false;
-                    if (!qs.isEmpty()) {
-                        DocumentSnapshot last = qs.getDocuments().get(0);
-                        String lastType = last.getString("type");
-                        com.google.firebase.Timestamp ts = last.getTimestamp("timestamp");
-                        if (ts != null && lastType != null) {
-                            Date lastDate = ts.toDate();
-                            Date now = new Date();
-                            Calendar c1 = Calendar.getInstance(); c1.setTime(lastDate);
-                            Calendar c2 = Calendar.getInstance(); c2.setTime(now);
-                            boolean sameDay = c1.get(Calendar.YEAR) == c2.get(Calendar.YEAR)
-                                    && c1.get(Calendar.MONTH) == c2.get(Calendar.MONTH)
-                                    && c1.get(Calendar.DAY_OF_MONTH) == c2.get(Calendar.DAY_OF_MONTH);
-                            if (sameDay && lastType.equals(type)) {
-                                Toast.makeText(this, "Bạn đã " + type + " hôm nay rồi", Toast.LENGTH_SHORT).show();
-                                skip = true;
-                            }
-                        }
-                    }
-
-                    if (!skip) {
-                        saveAttendanceRecord(type, geoPoint, uid);
-                    }
-                })
-                .addOnFailureListener(e -> {
-                    Log.e(TAG, "Failed to query last attendance", e);
-
-                    // Nếu lỗi là do thiếu index, vẫn cho phép lưu attendance
-                    if (e.getMessage() != null && e.getMessage().contains("FAILED_PRECONDITION")) {
-                        Log.w(TAG, "Index not found, proceeding without duplicate check");
-                        Toast.makeText(this, "Cảnh báo: Không thể kiểm tra trùng lặp do thiếu index", Toast.LENGTH_SHORT).show();
-                    }
-                    saveAttendanceRecord(type, geoPoint, uid);
-                });
-        */
+        
+        if (type.equals("checkin")) {
+            createNewAttendanceSession(uid, geoPoint);
+        } else {
+            updateAttendanceSession(uid, geoPoint);
+        }
     }
 
-    private void saveAttendanceRecord(String type, GeoPoint geoPoint, String uid) {
-        Map<String, Object> record = new HashMap<>();
-        record.put("userId", uid);
-        record.put("type", type);
-        record.put("timestamp", FieldValue.serverTimestamp());
-        if (geoPoint != null) {
-            record.put("location", geoPoint);
-        } else {
-            record.put("location", null);
-            Log.w(TAG, "Location is null, saving record without location");
-        }
+    private void createNewAttendanceSession(String uid, GeoPoint geoPoint) {
+        // Tạo date string cho ngày hôm nay
+        SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
+        String todayDate = dateFormat.format(new Date());
 
-        db.collection("attendance")
-                .add(record)
+        Map<String, Object> sessionData = new HashMap<>();
+        sessionData.put("userId", uid);
+        sessionData.put("checkinTime", FieldValue.serverTimestamp());
+        sessionData.put("checkinLocation", geoPoint);
+        sessionData.put("date", todayDate);
+        sessionData.put("status", "active");
+
+        db.collection("attendanceSessions")
+                .add(sessionData)
                 .addOnSuccessListener(doc -> {
-                    String actionText = type.equals("checkin") ? "Chấm công vào" : "Chấm công ra";
+                    Log.d(TAG, "Attendance session created: " + doc.getId());
+                    
                     String locationText = geoPoint != null
                             ? "với vị trí (lat: " + String.format("%.6f", geoPoint.getLatitude()) +
                             ", lon: " + String.format("%.6f", geoPoint.getLongitude()) + ")"
                             : "(không có vị trí)";
 
-                    String message = actionText + " thành công " + locationText;
-                    statusText.setText(message);
-
-                    // Hiển thị dialog thành công
-                    showSuccessDialog(actionText, geoPoint);
+                    statusText.setText("Check-in thành công " + locationText);
+                    updateLocalState("checkin", doc.getId());
+                    showSuccessDialog("Chấm công vào", geoPoint, "checkin");
                 })
                 .addOnFailureListener(e -> {
-                    Log.e(TAG, "Failed to save attendance", e);
-                    String errorMsg = "Lỗi: " + e.getMessage();
-                    Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show();
+                    Log.e(TAG, "Failed to create attendance session", e);
+                    Toast.makeText(this, "Lỗi: " + e.getMessage(), Toast.LENGTH_LONG).show();
                 });
     }
 
-    private void showSuccessDialog(String actionText, GeoPoint geoPoint) {
+    private void updateAttendanceSession(String uid, GeoPoint geoPoint) {
+        String sessionId = preferences.getString(KEY_SESSION_ID, "");
+        if (sessionId.isEmpty()) {
+            Toast.makeText(this, "Không tìm thấy phiên check-in", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        long checkinTime = preferences.getLong(KEY_CHECKIN_TIME, 0);
+        long workDuration = System.currentTimeMillis() - checkinTime;
+        long hours = TimeUnit.MILLISECONDS.toHours(workDuration);
+        long minutes = TimeUnit.MILLISECONDS.toMinutes(workDuration) % 60;
+
+        Map<String, Object> updateData = new HashMap<>();
+        updateData.put("checkoutTime", FieldValue.serverTimestamp());
+        updateData.put("checkoutLocation", geoPoint);
+        updateData.put("workDurationMs", workDuration);
+        updateData.put("workDurationText", hours + " giờ " + minutes + " phút");
+        updateData.put("status", "completed");
+
+        db.collection("attendanceSessions").document(sessionId)
+                .update(updateData)
+                .addOnSuccessListener(aVoid -> {
+                    Log.d(TAG, "Attendance session updated: " + sessionId);
+                    
+                    String locationText = geoPoint != null
+                            ? "với vị trí (lat: " + String.format("%.6f", geoPoint.getLatitude()) +
+                            ", lon: " + String.format("%.6f", geoPoint.getLongitude()) + ")"
+                            : "(không có vị trí)";
+
+                    statusText.setText("Check-out thành công " + locationText);
+                    updateLocalState("checkout", "");
+                    showSuccessDialog("Chấm công ra", geoPoint, "checkout");
+                })
+                .addOnFailureListener(e -> {
+                    Log.e(TAG, "Failed to update attendance session", e);
+                    Toast.makeText(this, "Lỗi: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                });
+    }
+
+    private void updateLocalState(String type, String sessionId) {
+        SharedPreferences.Editor editor = preferences.edit();
+        
+        if (type.equals("checkin")) {
+            editor.putBoolean(KEY_IS_CHECKED_IN, true);
+            editor.putLong(KEY_CHECKIN_TIME, System.currentTimeMillis());
+            editor.putString(KEY_SESSION_ID, sessionId);
+        } else if (type.equals("checkout")) {
+            editor.putBoolean(KEY_IS_CHECKED_IN, false);
+            editor.remove(KEY_CHECKIN_TIME);
+            editor.remove(KEY_SESSION_ID);
+        }
+        
+        editor.apply();
+        updateUIBasedOnState();
+    }
+
+    private void clearAttendanceState() {
+        SharedPreferences.Editor editor = preferences.edit();
+        editor.clear();
+        editor.apply();
+    }
+
+    private void showSuccessDialog(String actionText, GeoPoint geoPoint, String type) {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle("✅ Thành công!");
 
@@ -299,9 +361,19 @@ public class MainActivity extends AppCompatActivity {
 
         if (geoPoint != null) {
             message += "Vị trí: " + String.format("%.6f", geoPoint.getLatitude()) +
-                    ", " + String.format("%.6f", geoPoint.getLongitude());
+                    ", " + String.format("%.6f", geoPoint.getLongitude()) + "\n";
         } else {
-            message += "Vị trí: Không xác định được";
+            message += "Vị trí: Không xác định được\n";
+        }
+
+        if (type.equals("checkout")) {
+            long checkinTime = preferences.getLong(KEY_CHECKIN_TIME, 0);
+            if (checkinTime > 0) {
+                long workDuration = System.currentTimeMillis() - checkinTime;
+                long hours = TimeUnit.MILLISECONDS.toHours(workDuration);
+                long minutes = TimeUnit.MILLISECONDS.toMinutes(workDuration) % 60;
+                message += "\nThời gian làm việc: " + hours + " giờ " + minutes + " phút";
+            }
         }
 
         builder.setMessage(message);
@@ -311,12 +383,11 @@ public class MainActivity extends AppCompatActivity {
         AlertDialog dialog = builder.create();
         dialog.show();
 
-        // Tự động đóng sau 3 giây
         new android.os.Handler().postDelayed(() -> {
             if (dialog.isShowing()) {
                 dialog.dismiss();
             }
-        }, 3000);
+        }, 5000);
     }
 
     @Override
@@ -325,5 +396,11 @@ public class MainActivity extends AppCompatActivity {
         if (locationCallback != null) {
             locationClient.removeLocationUpdates(locationCallback);
         }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        updateUIBasedOnState();
     }
 }
