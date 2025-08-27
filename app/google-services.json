@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "209622059899",
+    "project_id": "checkin-app-808f4",
+    "storage_bucket": "checkin-app-808f4.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:209622059899:android:0226871232017b5db00bde",
+        "android_client_info": {
+          "package_name": "com.company.checkinapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBUpDFckbzoxyBb4KO6lalc-c7qq7pXBMk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
